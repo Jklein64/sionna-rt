@@ -20,7 +20,7 @@ from sionna.rt.utils import dbm_to_watt
 def paths_to_coverage_map(paths):
     """
     Converts paths into the equivalent coverage map values.
-    The coverage map is assumed to be a ssquare.
+    The coverage map is assumed to be a square.
     """
     # [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths]
     a_real, a_imag = paths.a

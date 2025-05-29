@@ -117,7 +117,7 @@ class RadioMap:
         num_cells = self._num_cells
         cell_size = self._cell_size
 
-        # Positions of cell centers in measuement plane coordinate system
+        # Positions of cell centers in measurement plane coordinate system
 
         # [num_cells_x]
         x_positions = dr.arange(mi.Float, 0, num_cells.x[0])
