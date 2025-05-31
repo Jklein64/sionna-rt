@@ -121,11 +121,9 @@ def validate_cm(los=False,
     rm_theo = paths_to_coverage_map(paths)[0]
     rm_rt =rm.path_gain.numpy()[0]
 
-    err = np.where(rm_theo == 0.0,
-                    0.0,
-                    np.abs(rm_rt - rm_theo) / rm_theo)
-
-    nmse_db = 10*np.log10(np.mean(np.abs(err)**2))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        err = np.abs(rm_rt - rm_theo) / rm_theo
+    nmse_db = 10*np.log10(np.mean(err[np.isfinite(err)]**2))
     return rm, rm_theo, nmse_db
 
 
@@ -392,8 +390,9 @@ def test_sinr_map():
     sinr_map_per_tx = rm.sinr.numpy()
     tile_to_tx = rm.tx_association('sinr').numpy()
 
-    err_sinr_map_per_tx = np.sort(np.abs((sinr_map_per_tx - sinr_map_per_tx_ideal)\
-                                        /sinr_map_per_tx_ideal).flatten())
+    with np.errstate(divide="ignore", invalid="ignore"):
+        err_sinr_map_per_tx = np.sort(np.abs((sinr_map_per_tx - sinr_map_per_tx_ideal)\
+                                             /sinr_map_per_tx_ideal).flatten())
     err_sinr_map_per_tx = err_sinr_map_per_tx[np.isfinite(err_sinr_map_per_tx)]
 
     err_tile_to_tx = np.max(abs(tile_to_tx_ideal - tile_to_tx))
