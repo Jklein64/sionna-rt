@@ -80,12 +80,33 @@ class RadioMap:
                                         rx_positions_y,
                                         rx_positions_z)
 
-        # Builds the Mitsuba rectangle modeling the measurement plane
-        meas_plane = meas_plane = mi.load_dict({'type': 'rectangle'})
-        params = mi.traverse(meas_plane)
-        params['to_world'] = self.to_world
+        # Builds the Mitsuba mesh modeling the measurement surface
+        meas_surf = mi.Mesh(
+            name="measurement_surface",
+            vertex_count=4,
+            face_count=2,
+            has_vertex_texcoords=True)
+        meas_surf_vertices = mi.Point3f(
+            [-1, 1, -1, 1],
+            [-1, -1, 1, 1],
+            [0, 0, 0, 0])
+        rot = rotation_matrix(self._orientation)
+        meas_surf_vertices.xy *= self.size / 2
+        meas_surf_vertices = rot @ meas_surf_vertices
+        meas_surf_vertices += self.center
+        meas_surf_faces = mi.Point3u([0, 0], [1, 3], [3, 2])
+        meas_surf_texcoords = mi.Point2f([0, 1, 0, 1], [0, 0, 1, 1])
+        params = mi.traverse(meas_surf)
+        params["vertex_positions"] = dr.ravel(meas_surf_vertices)
+        params["vertex_texcoords"] = dr.ravel(meas_surf_texcoords)
+        params["faces"] = dr.ravel(meas_surf_faces)
         params.update()
-        self._meas_plane = meas_plane
+
+        self._meas_surf = meas_surf
+        self._meas_surf_scene = mi.load_dict({
+            "type": "scene",
+            "measurement_surface": meas_surf
+        })
 
         # Initialize the pathgain map to zero
         num_cells = self.num_cells
@@ -99,13 +120,20 @@ class RadioMap:
         self._sampler = mi.load_dict({'type': 'independent'})
 
     @property
-    def measurement_plane(self):
-        r"""Mitsuba rectangle corresponding to the
-        radio map measurement plane
+    def measurement_surface(self):
+        r"""Mitsuba mesh corresponding to the radio map measurement surface
 
-        :type: :py:class:`mi.Rectangle`
+        :type: :py:class:`mi.Mesh`
         """
-        return self._meas_plane
+        return self._meas_surf
+
+    @property
+    def measurement_surface_scene(self):
+        r"""Mitsuba scene containing just the radio map measurement surface
+
+        :type: :py:class:`mi.Scene`
+        """
+        return self._meas_surf_scene
 
     @property
     def cell_centers(self):
@@ -117,7 +145,7 @@ class RadioMap:
         num_cells = self._num_cells
         cell_size = self._cell_size
 
-        # Positions of cell centers in measurement plane coordinate system
+        # Positions of cell centers in measurement surface coordinate system
 
         # [num_cells_x]
         x_positions = dr.arange(mi.Float, 0, num_cells.x[0])
@@ -317,7 +345,7 @@ class RadioMap:
         hit : mi.Bool
         ) -> None:
         r"""
-        Adds the contribution of the rays that hit the measurement plane to the
+        Adds the contribution of the rays that hit the measurement surface to the
         radio maps
 
         The radio maps are updated in place.
@@ -327,11 +355,11 @@ class RadioMap:
         :param array_w: Weighting used to model the effect of the transmitter
             array
         :param si_mp: Informations about the interaction with the measurement
-            plane
+            surface
         :param k_world: Directions of propagation of the rays
         :param tx_indices: Indices of the transmitters from which the rays
             originate
-        :param hit: Flags indicating if the rays hit the measurement plane
+        :param hit: Flags indicating if the rays hit the measurement surface
         """
 
         # Indices of the hit cells
@@ -347,8 +375,7 @@ class RadioMap:
         a = dr.squared_norm(a)
 
         # Ray weight
-        k_local = si_mp.to_local(k_world)
-        cos_theta = dr.abs(k_local.z)
+        cos_theta = dr.abs(dr.dot(k_world, si_mp.n))
         w = solid_angle*dr.rcp(cos_theta)
 
         a *= w
@@ -913,18 +940,18 @@ class RadioMap:
         :math:`(x,y)` coordinates
 
         :param p_local: Coordinates of the intersected points in the
-            measurement plane local frame
+            measurement surface local frame
 
-        :return: Cell indices in the flattened measurement plane
+        :return: Cell indices in the flattened measurement surface
         """
 
         # Size of a cell in UV space
         cell_size_uv = mi.Vector2f(self._num_cells)
 
-        # Cell indices in the 2D measurement plane
+        # Cell indices in the 2D measurement surface
         cell_ind = mi.Point2i(dr.floor(p_local*cell_size_uv))
 
-        # Cell indices for the flattened measurement plane
+        # Cell indices for the flattened measurement surface
         cell_ind = cell_ind[1]*self._num_cells[0]+cell_ind[0]
 
         return cell_ind
@@ -934,7 +961,7 @@ class RadioMap:
         Computes the indices of the hitted cells of the map from the global
         :math:`(x,y,z)` coordinates
 
-        :param p_global: Coordinates of the a point on the measurement plane
+        :param p_global: Coordinates of the a point on the measurement surface
             in the global frame
 
         :return: `(x, y)` indices of the cell which contains `p_global`

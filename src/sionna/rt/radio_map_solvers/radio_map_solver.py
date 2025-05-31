@@ -505,11 +505,11 @@ class RadioMapSolver:
             # Test intersection with the scene
             si_scene = scene.mi_scene.ray_intersect(ray, active=active)
 
-            # Test intersection with the measurement plane
-            si_mp = radio_map.measurement_plane.ray_intersect(ray,
-                                                              active=active)
+            # Test intersection with the measurement surface
+            meas_surf = radio_map.measurement_surface_scene
+            si_mp = meas_surf.ray_intersect(ray, active=active)
 
-            # An intersection with the measurement plane is valid only if
+            # An intersection with the measurement surface is valid only if
             # (i) it was not obstructed by the scene, and (ii) the intersection
             # is valid.
             val_mp_int = active & (si_mp.t < si_scene.t) & si_mp.is_valid()

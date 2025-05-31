@@ -159,7 +159,7 @@ def test_random_positions():
                                 pattern="iso",
                                 polarization="V")
 
-    # Position of the measurement plane
+    # Position of the measurement surface
     radio_map_pos = dr.copy(scene.transmitters["tx"].position)
     radio_map_pos.z = 1.5
 
