@@ -18,6 +18,9 @@ from .constants import InteractionType, LOS_COLOR, SPECULAR_COLOR, \
         DEFAULT_TRANSMITTER_COLOR, DEFAULT_RECEIVER_COLOR
 from .utils import rotation_matrix, scene_scale
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .scene import Scene
 
 class Previewer:
     """
@@ -42,7 +45,7 @@ class Previewer:
         Defaults to '#87CEEB'.
     """
 
-    def __init__(self, scene, resolution=(655,500), fov=45.,
+    def __init__(self, scene: "Scene", resolution=(655,500), fov=45.,
                  background='white'):
 
         self._scene = scene
@@ -363,57 +366,60 @@ class Previewer:
         Plot the coverage map as a textured rectangle in the scene. Regions
         where the coverage map is zero-valued are made transparent.
         """
-        to_world = radio_map.to_world
-
         tensor = radio_map.transmitter_radio_map(metric, tx)
         tensor = tensor.numpy()
 
-        # Create a rectangle from two triangles
-        p00 = to_world.transform_affine([-1, -1, 0]).numpy().T[0]
-        p01 = to_world.transform_affine([1, -1, 0]).numpy().T[0]
-        p10 = to_world.transform_affine([-1, 1, 0]).numpy().T[0]
-        p11 = to_world.transform_affine([1, 1, 0]).numpy().T[0]
+        meas_surf = radio_map.measurement_surface
+        proj_frame = radio_map.projection_frame
+        params = mi.traverse(meas_surf)
+        vert_global = dr.reshape(dtype=mi.Point3f,
+                                 value=params["vertex_positions"],
+                                 shape=(3, -1))
+        vert_local = proj_frame.to_local(vert_global)
+        faces = dr.reshape(mi.Point3u, params["faces"], (3, -1))
+        pmin_local = dr.min(vert_local, axis=1)
+        pmax_local = dr.max(vert_local, axis=1)
+        extents = pmax_local - pmin_local
+        vertex_uvs = (vert_local.xy - pmin_local.xy) / extents.xy
 
-        vertices = np.array([p00, p01, p10, p11])
-        pmin = np.min(vertices, axis=0)
-        pmax = np.max(vertices, axis=0)
+        pmin = proj_frame.to_world(pmin_local)
+        pmax = proj_frame.to_world(pmax_local)
+        # Convert to scalar to avoid error with ScalarBoundingBox
+        pmin = mi.ScalarPoint3f(np.squeeze(pmin.numpy()))
+        pmax = mi.ScalarPoint3f(np.squeeze(pmax.numpy()))
 
-        faces = np.array([
-            [0, 1, 2],
-            [2, 1, 3],
-        ], dtype=np.uint32)
-
-        vertex_uvs = np.array([
-            [0, 0], [1, 0], [0, 1], [1, 1]
-        ], dtype=np.float32)
+        # Transpose since .numpy() gives arrays with shape (ndim, -1)
+        position_np = vert_global.numpy().T
+        index_np = faces.numpy().T.ravel()
+        uv_np = vertex_uvs.numpy().T
 
         geo = p3s.BufferGeometry(
             attributes={
-                'position': p3s.BufferAttribute(vertices, normalized=False),
-                'index': p3s.BufferAttribute(faces.ravel(), normalized=False),
-                'uv': p3s.BufferAttribute(vertex_uvs, normalized=False),
+                "position": p3s.BufferAttribute(position_np, normalized=False),
+                "index": p3s.BufferAttribute(index_np, normalized=False),
+                "uv": p3s.BufferAttribute(uv_np, normalized=False),
             }
         )
 
         to_map, normalizer, color_map = self._coverage_map_color_mapping(
-            tensor, db_scale=db_scale, vmin=vmin, vmax=vmax)
+            tensor, db_scale=db_scale, vmin=vmin, vmax=vmax
+        )
         texture = color_map(normalizer(to_map)).astype(np.float32)
-        texture[:, :, 3] = (tensor > 0.).astype(np.float32)
+        texture[:, :, 3] = (tensor > 0.0).astype(np.float32)
         # Pre-multiply alpha
         texture[:, :, :3] *= texture[:, :, 3, None]
 
         texture = p3s.DataTexture(
-            data=(255. * texture).astype(np.uint8),
-            format='RGBAFormat',
-            type='UnsignedByteType',
-            magFilter='NearestFilter',
-            minFilter='NearestFilter',
+            data=(255.0 * texture).astype(np.uint8),
+            format="RGBAFormat",
+            type="UnsignedByteType",
+            magFilter="NearestFilter",
+            minFilter="NearestFilter",
         )
 
-        mat = p3s.MeshLambertMaterial(
-            side='DoubleSide',
-            map=texture, transparent=True,
-        )
+        mat = p3s.MeshLambertMaterial(side="DoubleSide",
+                                      map=texture,
+                                      transparent=True)
         mesh = p3s.Mesh(geo, mat)
 
         self._add_child(mesh, pmin, pmax, persist=False)

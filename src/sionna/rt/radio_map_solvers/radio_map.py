@@ -12,7 +12,7 @@ from matplotlib.colors import from_levels_and_colors
 import warnings
 from typing import Tuple, List
 
-from sionna.rt.utils import watt_to_dbm, log10, rotation_matrix
+from sionna.rt.utils import watt_to_dbm, log10
 from sionna.rt.scene import Scene
 from sionna.rt.constants import DEFAULT_TRANSMITTER_COLOR,\
     DEFAULT_RECEIVER_COLOR
@@ -38,19 +38,87 @@ class RadioMap:
 
     def __init__(self,
                  scene : Scene,
-                 center : mi.Point3f,
-                 orientation : mi.Point3f,
-                 size : mi.Point2f,
-                 cell_size : mi.Point2f):
+                 meas_surf : mi.Mesh,
+                 cell_size : mi.Point2f,
+                 proj_normal : mi.Vector3f | None = None,
+                 area_samples = 1_000_000,
+                 area_samples_per_round = 10_000_000):
+
+        # create parameterization of measurement surface
+        params = mi.traverse(meas_surf)
+        faces = dr.reshape(mi.Vector3u, params["faces"], (3, -1))
+        n = meas_surf.face_normal(dr.arange(mi.UInt, dr.width(faces)))
+
+        n0 = meas_surf.face_normal(0)
+        is_flat = dr.all(dr.norm(n - n0) < dr.epsilon(mi.Float))[0]
+        if proj_normal is None:
+            # infer the projection normal if meas_surf is flat
+            proj_normal = n0 if is_flat else mi.Vector3f(0, 0, 1)
+        self._proj_frame = mi.Frame3f(proj_normal)
+
+        # The parameterization works by associating each vertex with a texcoord
+        # that is just a scaled and shifted copy of the vertex's projection
+        # onto a plane with the given normal vector. The parameterization is not
+        # bijective when the mesh "folds over" itself when viewed along the
+        # given normal vector. Assuming the input mesh is connected and its
+        # geometric normals do not instantaneously change direction, the mesh
+        # "folds over" itself when any geometric normal points in the opposite
+        # direction of the given projection plane normal vector.
+        if not dr.all(dr.dot(n, proj_normal) > 0):
+            warnings.warn(
+                "The mesh parameterization is not bijective, which may "
+                "significantly impact the accuracy of cell surface area "
+                "computation. Try using a different projection normal.",
+                category=RuntimeWarning,
+            )
+
+        vert_world = dr.reshape(mi.Point3f, params["vertex_positions"], (3, -1))
+        vert_local = self._proj_frame.to_local(vert_world)
+        bbox = mi.BoundingBox2f(min=dr.min(vert_local.xy, axis=1),
+                                max=dr.max(vert_local.xy, axis=1))
+        texcoords = (vert_local.xy - bbox.min) / bbox.extents()
+
+        meas_surf = mi.Mesh(name="measurement_surface",
+                            vertex_count=dr.width(vert_world),
+                            face_count=dr.width(faces),
+                            has_vertex_texcoords=True)
+        params = mi.traverse(meas_surf)
+        params["vertex_positions"] = dr.ravel(vert_world)
+        params["vertex_texcoords"] = dr.ravel(texcoords)
+        params["faces"] = dr.ravel(faces)
+        params.update()
+
+        meas_surf.recompute_bbox()
+        self._meas_surf = meas_surf
+        self._meas_surf_scene = mi.load_dict({
+            "type": "scene",
+            "measurement_surface": meas_surf
+        })
 
         # Number of cells
-        num_cells = mi.Point2u(dr.ceil(size/cell_size))
-
-        self._num_cells = num_cells
-        self._center = mi.Point3f(center)
         self._cell_size = mi.Point2f(cell_size)
-        self._orientation = mi.Point3f(orientation)
-        self._size = mi.Point2f(size)
+        num_cells = mi.Point2u(dr.ceil(bbox.extents() / self._cell_size))
+        self._num_cells = num_cells
+
+        # Precompute cell areas
+        cell_area_shape = (num_cells.y[0], num_cells.x[0])
+        # bbox is in local coordinates of proj_frame, but that only applies
+        # a rotation, so with unit proj_normal, scale is still preserved
+        cell_area_flat = (self._cell_size.x * self._cell_size.y)[0]
+        self._cell_areas = dr.full(mi.TensorXf, cell_area_flat, cell_area_shape)
+        if not is_flat:
+            self._cell_areas *= self._compute_cell_area_scaling_factors(
+                mesh=meas_surf,
+                rows=num_cells.y[0],
+                cols=num_cells.x[0],
+                proj_normal=proj_normal,
+                samples=area_samples,
+                samples_per_round=area_samples_per_round,
+            )
+
+        self._size = mi.Point2f(bbox.extents())
+
+        self._center = meas_surf.bbox().center()
         self._thermal_noise_power = scene.thermal_noise_power
         self._wavelength = scene.wavelength
 
@@ -80,40 +148,10 @@ class RadioMap:
                                         rx_positions_y,
                                         rx_positions_z)
 
-        # Builds the Mitsuba mesh modeling the measurement surface
-        meas_surf = mi.Mesh(
-            name="measurement_surface",
-            vertex_count=4,
-            face_count=2,
-            has_vertex_texcoords=True)
-        meas_surf_vertices = mi.Point3f(
-            [-1, 1, -1, 1],
-            [-1, -1, 1, 1],
-            [0, 0, 0, 0])
-        rot = rotation_matrix(self._orientation)
-        meas_surf_vertices.xy *= self.size / 2
-        meas_surf_vertices = rot @ meas_surf_vertices
-        meas_surf_vertices += self.center
-        meas_surf_faces = mi.Point3u([0, 0], [1, 3], [3, 2])
-        meas_surf_texcoords = mi.Point2f([0, 1, 0, 1], [0, 0, 1, 1])
-        params = mi.traverse(meas_surf)
-        params["vertex_positions"] = dr.ravel(meas_surf_vertices)
-        params["vertex_texcoords"] = dr.ravel(meas_surf_texcoords)
-        params["faces"] = dr.ravel(meas_surf_faces)
-        params.update()
-
-        self._meas_surf = meas_surf
-        self._meas_surf_scene = mi.load_dict({
-            "type": "scene",
-            "measurement_surface": meas_surf
-        })
-
         # Initialize the pathgain map to zero
-        num_cells = self.num_cells
-        pathgain_map = dr.zeros(mi.TensorXf, [self.num_tx, num_cells.y[0],
-                                              num_cells.x[0]])
-
-        self._pathgain_map = pathgain_map
+        self._pathgain_map = dr.zeros(
+            mi.TensorXf, [self.num_tx, num_cells.y[0], num_cells.x[0]]
+        )
 
         # Sampler used to randomly sample user positions using
         # sample_positions()
@@ -142,35 +180,17 @@ class RadioMap:
 
         :type: :py:class:`mi.TensorXf [num_cells_y, num_cells_x, 3]`
         """
-        num_cells = self._num_cells
-        cell_size = self._cell_size
-
-        # Positions of cell centers in measurement surface coordinate system
-
-        # [num_cells_x]
-        x_positions = dr.arange(mi.Float, 0, num_cells.x[0])
-        x_positions = (x_positions + 0.5)*cell_size.x - 0.5*self._size.x
-        # [num_cells_y*num_cells_x]
-        x_positions = dr.tile(x_positions, num_cells.y[0])
-
-        # [num_cells_y]
-        y_positions = dr.arange(mi.Float, num_cells.y[0])
-        y_positions = (y_positions + 0.5)*cell_size.y - 0.5*self._size.y
-        # [num_cells_y*num_cells_x]
-        y_positions = dr.repeat(y_positions, num_cells.x[0])
-
-        # [num_cells_y*xnum_cells_x]
-        cell_pos = mi.Point3f(x_positions, y_positions, 0.)
-
-        # Rotate to world frame
-        to_world = rotation_matrix(self._orientation)
-        cell_pos = to_world@cell_pos + self._center
-
-        # To-tensor
-        cell_pos = dr.ravel(cell_pos)
-        cell_pos = dr.reshape(mi.TensorXf, cell_pos,
-                              [num_cells.y[0], num_cells.x[0], 3])
-        return cell_pos
+        num_cells_x = self._num_cells.x[0]
+        num_cells_y = self._num_cells.y[0]
+        center_uv = mi.Point2f(*dr.meshgrid(
+            (dr.arange(mi.Float, num_cells_x) + 0.5) / num_cells_x,
+            (dr.arange(mi.Float, num_cells_y) + 0.5) / num_cells_y))
+        # (num_cells_x * num_cells_y, 3)
+        center_xyz = self._meas_surf.eval_parameterization(center_uv).p
+        # (num_cells_y, num_cells_x, 3)
+        return dr.reshape(dtype=mi.TensorXf,
+                          value=dr.ravel(center_xyz),
+                          shape=(num_cells_y, num_cells_x, 3))
 
     @property
     def cell_size(self):
@@ -189,7 +209,7 @@ class RadioMap:
         return self._center
 
     @property
-    def orientation(self):
+    def projection_frame(self):
         r"""Orientation of the radio map :math:`(\alpha, \beta, \gamma)`
         specified through three angles corresponding to a 3D rotation as defined
         in :eq:`rotation`. An orientation of :math:`(0,0,0)` corresponds to a
@@ -197,7 +217,7 @@ class RadioMap:
 
         :type: :py:class:`mi.Point3f`
         """
-        return self._orientation
+        return self._proj_frame
 
     @property
     def num_cells(self):
@@ -345,8 +365,8 @@ class RadioMap:
         hit : mi.Bool
         ) -> None:
         r"""
-        Adds the contribution of the rays that hit the measurement surface to the
-        radio maps
+        Adds the contribution of the rays that hit the measurement surface to
+        the radio maps
 
         The radio maps are updated in place.
 
@@ -388,30 +408,9 @@ class RadioMap:
         r"""Finalizes the computation of the radio map"""
 
         # Scale the pathloss map
-        cell_area = self._cell_size[0]*self._cell_size[1]
         wavelength = self._wavelength
-        scaling = dr.square(wavelength*dr.rcp(4.*dr.pi))*dr.rcp(cell_area)
+        scaling = dr.square(wavelength*dr.rcp(4.*dr.pi)) / self._cell_areas
         self._pathgain_map *= scaling
-
-    @property
-    def to_world(self):
-        r"""Transform that maps a unit square in the X-Y plane to the rectangle
-        that defines the radio map surface
-
-        :type: :py:class:`mi.Transform4f`
-        """
-
-        center = self.center
-        orientation = self.orientation
-        size = self.size
-
-        orientation_deg = orientation*180./dr.pi
-        to_world = mi.Transform4f().translate(center).\
-                                    rotate([0., 0., 1.], orientation_deg.z).\
-                                    rotate([0., 1., 0.], orientation_deg.y).\
-                                    rotate([1., 0., 0.], orientation_deg.x).\
-                                    scale([0.5 * size.x, 0.5 * size.y, 1])
-        return to_world
 
     def show(
         self,
@@ -944,15 +943,11 @@ class RadioMap:
 
         :return: Cell indices in the flattened measurement surface
         """
-
-        # Size of a cell in UV space
-        cell_size_uv = mi.Vector2f(self._num_cells)
-
         # Cell indices in the 2D measurement surface
-        cell_ind = mi.Point2i(dr.floor(p_local*cell_size_uv))
+        cell_ind = mi.Point2u(dr.floor(p_local * self._num_cells))
 
         # Cell indices for the flattened measurement surface
-        cell_ind = cell_ind[1]*self._num_cells[0]+cell_ind[0]
+        cell_ind = cell_ind[1] * self._num_cells[0] + cell_ind[0]
 
         return cell_ind
 
@@ -970,19 +965,70 @@ class RadioMap:
         if dr.width(p_global) == 0:
             return mi.Point2u()
 
-        to_world = rotation_matrix(self._orientation)
-        to_local = to_world.T
+        proj_normal = self._proj_frame.n
+        scene = self._meas_surf_scene
+        # project to measurement surface along proj_normal
+        ray = mi.Ray3f(p_global, proj_normal)
+        si = scene.ray_intersect(ray)
+        # recompute with flipped directions if the ray missed
+        if dr.width(missed := dr.isinf(si.t)) > 0:
+            ray.d[missed] = -proj_normal
+            si = scene.ray_intersect(ray)
 
-        p_local = to_local@(p_global - self._center)
+        return mi.Point2u(dr.floor(si.uv * self._num_cells))
 
-        # Discard the Z coordinate
-        p_local = mi.Point2f(p_local.x, p_local.y)
+    def _compute_cell_area_scaling_factors(
+            self,
+            mesh : mi.Mesh,
+            rows : int,
+            cols : int,
+            proj_normal : mi.Vector3f,
+            samples : int,
+            samples_per_round: int):
+        spp_total = 0
+        samples_remaining = samples
+        f_sum = dr.zeros(mi.Float, rows * cols)
+        # Divide into blocks. samples_per_block should be chosen based on the
+        # System's memory. Too large and things slow down significantly
+        while samples_remaining > 0:
+            if samples_remaining // samples_per_round == 0:
+                spp = max(1, int(samples_remaining / (rows * cols)))
+                samples_remaining = 0
+            else:
+                spp = max(1, int(samples_per_round / (rows * cols)))
+                samples_remaining -= samples_per_round
 
-        # Compute cell indices
-        ind = p_local + 0.5 * self._size
-        ind = mi.Point2u(dr.floor(ind / self._cell_size))
+            spp_total += spp
 
-        return ind
+            # Generate spp samples per grid cell
+            center_u, center_v = dr.meshgrid(
+                (dr.arange(mi.Float, cols) + 0.5) / cols,
+                (dr.arange(mi.Float, rows) + 0.5) / rows,
+            )
+            center_uv = mi.Point2f(
+                dr.repeat(center_u, count=spp),
+                dr.repeat(center_v, count=spp),
+            )
+            rng = dr.auto.ad.PCG32(size=2 * spp * rows * cols)
+            jitter = dr.reshape(mi.Vector2f, rng.next_float32(), shape=(2, -1))
+            jitter = (jitter - 0.5) / mi.Vector2f(cols, rows)
+            sample_uv = center_uv + jitter
+
+            # Query the mesh parameterization. si.t is inf when it misses
+            si = mesh.eval_parameterization(sample_uv)
+            sample_n = si.n
+
+            # Calculate and average scaling factors
+            f = dr.rcp(dr.abs_dot(sample_n, proj_normal))
+            all_idx = dr.arange(mi.UInt, spp * rows * cols)
+            # Slightly faster than using dr.compress() to make an index array
+            dr.scatter(f, value=0, index=all_idx, active=dr.isinf(si.t))
+            f_sum += dr.block_sum(value=f, block_size=spp)
+
+        cell_areas = dr.reshape(dtype=mi.TensorXf,
+                                value=f_sum / spp_total,
+                                shape=(rows, cols))
+        return cell_areas
 
     def transmitter_radio_map(
         self,
