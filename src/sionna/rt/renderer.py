@@ -12,7 +12,7 @@ import numpy as np
 
 from  sionna import rt
 from .utils import make_render_sensor, paths_to_segments, unmultiply_alpha, \
-                   twosided_diffuse, radio_map_to_textured_rectangle, \
+                   twosided_diffuse, radio_map_to_textured_mesh, \
                    scoped_set_log_level, scene_scale
 
 
@@ -358,7 +358,7 @@ def get_overlay_scene(scene: rt.Scene, sensor: mi.Sensor, paths: any | None = No
 
     # --- Coverage map
     if radio_map is not None:
-        result["radio-map"] = radio_map_to_textured_rectangle(
+        result["radio-map"] = radio_map_to_textured_mesh(
             radio_map, tx=rm_tx, db_scale=rm_db_scale,
             vmin=rm_vmin, vmax=rm_vmax, rm_metric=rm_metric,
             viewpoint=sensor.world_transform().translation())

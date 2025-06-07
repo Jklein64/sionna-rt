@@ -6,9 +6,14 @@
 
 import drjit as dr
 import mitsuba as mi
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
 
 from sionna.rt.constants import EPSILON_FLOAT
+from sionna.rt.utils.geometry import rotation_matrix
+
+if TYPE_CHECKING:
+    # allow type checking while avoiding circular import
+    from sionna.rt.scene import Scene
 
 
 def fibonacci_lattice(num_points : int) -> mi.Point2f:
@@ -155,3 +160,57 @@ def spawn_ray_to(
     #
     ray = mi.Ray3f(po, d,  maxt=maxt, time=0., wavelengths=mi.Color0f())
     return ray
+
+def measurement_plane(
+        scene : "Scene",
+        center : mi.Point3f | None = None,
+        orientation = None,
+        size : mi.Point2f | None = None
+) -> mi.Mesh:
+    # Check the properties of the rectangle defining the radio map
+    if ((center is None) and (size is None) and (orientation is None)):
+        # Default value for center: Center of the scene
+        # Default value for the scale: Just enough to cover all the scene
+        # with axis-aligned edges of the rectangle
+        # [min_x, min_y, min_z]
+        scene_min = scene.mi_scene.bbox().min
+        # In case of empty scene, bbox min is -inf
+        scene_min = dr.select(dr.isinf(scene_min), -1.0, scene_min)
+        # [max_x, max_y, max_z]
+        scene_max = scene.mi_scene.bbox().max
+        # In case of empty scene, bbox min is inf
+        scene_max = dr.select(dr.isinf(scene_max), 1.0, scene_max)
+        # Center and size
+        center = 0.5 * (scene_min + scene_max)
+        center.z = 1.5
+        size = scene_max - scene_min
+        size = mi.Point2f(size.x, size.y)
+        # Set the orientation to default value
+        orientation = dr.zeros(mi.Point3f, 1)
+    elif ((center is None) or (size is None) or (orientation is None)):
+        raise ValueError("If one of `cm_center`, `cm_orientation`,"\
+                            " or `cm_size` is not None, then all of them"\
+                            " must not be None")
+    else:
+        center = mi.Point3f(center)
+        orientation = mi.Point3f(orientation)
+        size = mi.Point2f(size)
+        
+    meas_plane = mi.Mesh(
+        name="measurement_surface",
+        vertex_count=4,
+        face_count=2)
+    vertices = mi.Point3f(
+        [-1, 1, -1, 1],
+        [-1, -1, 1, 1],
+        [0, 0, 0, 0])
+    vertices.xy *= size / 2
+    vertices = rotation_matrix(orientation) @ vertices
+    vertices += center
+
+    params = mi.traverse(meas_plane)
+    params["vertex_positions"] = dr.ravel(vertices)
+    params["faces"] = dr.ravel(mi.Point3u([0, 0], [1, 3], [3, 2]))
+    params.update()
+
+    return meas_plane

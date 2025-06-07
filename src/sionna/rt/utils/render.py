@@ -286,15 +286,14 @@ def twosided_diffuse(color: mi.Color3f | list[float]) -> mi.BSDF:
     })
 
 
-def radio_map_to_textured_rectangle(radio_map: rt.RadioMap, tx: int | None,
+def radio_map_to_textured_mesh(radio_map: rt.RadioMap, tx: int | None,
                                     db_scale: bool = True,
                                     vmin: float | None = None,
                                     vmax: float | None = None,
                                     rm_metric: str = "path_gain",
                                     viewpoint: mi.Vector3f | None = None):
-    # Ensure it's a CPU-side value
-    to_world = mi.ScalarTransform4f(radio_map.to_world.matrix.numpy().squeeze())
-
+    meas_surf = radio_map.measurement_surface
+    proj_frame = radio_map.projection_frame
     # Resample values from cell centers to cell corners
     rm_values = getattr(radio_map, rm_metric).numpy()
     if tx is None:
@@ -308,6 +307,7 @@ def radio_map_to_textured_rectangle(radio_map: rt.RadioMap, tx: int | None,
 
     texture, opacity = radio_map_texture(
         radio_map, db_scale=db_scale, vmin=vmin, vmax=vmax)
+
     bsdf = {
         'type': 'mask',
         'opacity': {
@@ -330,26 +330,28 @@ def radio_map_to_textured_rectangle(radio_map: rt.RadioMap, tx: int | None,
         },
     }
 
-    flip_normal = False
+    props = mi.Properties()
+    props["material"] = mi.load_dict(bsdf)
+    props["emitter"] = mi.load_dict(emitter)
     if viewpoint is not None:
         viewpoint = mi.ScalarPoint3f(viewpoint.numpy().squeeze())
+        center = meas_surf.bbox().center()
+        # Area emitters are single-sided, so flip normals if on the wrong side
+        if dr.dot(viewpoint - center, proj_frame.n) < 0:
+            props["flip_normals"] = True
 
-        # Area emitters are single-sided, so we need to flip the rectangle's
-        # normals if the camera is on the wrong side.
-        p0 = to_world.transform_affine([-1, -1, 0])
-        p1 = to_world.transform_affine([-1, 0, 0])
-        p2 = to_world.transform_affine([0, -1, 0])
-        plane_center = to_world.transform_affine([0, 0, 0])
-        normal = dr.cross(p1 - p0, p2 - p0)
-        flip_normal = dr.dot(plane_center - viewpoint, normal) < 0
+    mesh = mi.Mesh(name="textured_measurement_surface",
+                   vertex_count=meas_surf.vertex_count(),
+                   face_count=meas_surf.face_count(),
+                   has_vertex_texcoords=True,
+                   props=props)
+    meas_surf_params = mi.traverse(meas_surf)
+    mesh_params = mi.traverse(mesh)
+    for key in ("vertex_positions", "vertex_texcoords", "faces"):
+        mesh_params[key] = meas_surf_params[key]
+    mesh_params.update()
 
-    return {
-        'type': 'rectangle',
-        'flip_normals': flip_normal,
-        'to_world': to_world,
-        'bsdf': bsdf,
-        'emitter': emitter,
-    }
+    return mesh
 
 
 def resample_to_corners(values: np.ndarray) -> np.ndarray:

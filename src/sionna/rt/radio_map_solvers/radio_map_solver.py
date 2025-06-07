@@ -9,8 +9,8 @@ import drjit as dr
 from typing import Tuple, Callable, List
 
 from sionna.rt.utils import spawn_ray_from_sources, fibonacci_lattice,\
-    rotation_matrix, spectrum_to_matrix_4f
-from sionna.rt import Scene
+    rotation_matrix, spectrum_to_matrix_4f, measurement_plane
+from sionna.rt.scene import Scene
 from sionna.rt.antenna_pattern import antenna_pattern_to_world_implicit
 from sionna.rt.constants import InteractionType
 
@@ -226,10 +226,9 @@ class RadioMapSolver:
     def __call__(
         self,
         scene : Scene,
-        center : mi.Point3f | None = None,
-        orientation : mi.Point3f | None = None,
-        size : mi.Point2f | None = None,
+        meas_surf : mi.Mesh,
         cell_size : mi.Point2f = mi.Point2f(10, 10),
+        proj_normal : mi.Vector3f | None = mi.Vector3f(0, 0, 1),
         precoding_vec : Tuple[mi.TensorXf, mi.TensorXf] | None = None,
         samples_per_tx : int = 1000000,
         max_depth : int = 3,
@@ -300,35 +299,6 @@ class RadioMapSolver:
         # Check that the scene is all set for simulations
         scene.all_set(radio_map=True)
 
-        # Check the properties of the rectangle defining the radio map
-        if ((center is None) and (size is None) and (orientation is None)):
-            # Default value for center: Center of the scene
-            # Default value for the scale: Just enough to cover all the scene
-            # with axis-aligned edges of the rectangle
-            # [min_x, min_y, min_z]
-            scene_min = scene.mi_scene.bbox().min
-            # In case of empty scene, bbox min is -inf
-            scene_min = dr.select(dr.isinf(scene_min), -1.0, scene_min)
-            # [max_x, max_y, max_z]
-            scene_max = scene.mi_scene.bbox().max
-            # In case of empty scene, bbox min is inf
-            scene_max = dr.select(dr.isinf(scene_max), 1.0, scene_max)
-            # Center and size
-            center = 0.5 * (scene_min + scene_max)
-            center.z = 1.5
-            size = scene_max - scene_min
-            size = mi.Point2f(size.x, size.y)
-            # Set the orientation to default value
-            orientation = dr.zeros(mi.Point3f, 1)
-        elif ((center is None) or (size is None) or (orientation is None)):
-            raise ValueError("If one of `cm_center`, `cm_orientation`,"\
-                             " or `cm_size` is not None, then all of them"\
-                             " must not be None")
-        else:
-            center = mi.Point3f(center)
-            orientation = mi.Point3f(orientation)
-            size = mi.Point2f(size)
-
         # Check and initialize the precoding vector
         num_tx = len(scene.transmitters)
         num_tx_ant = scene.tx_array.num_ant
@@ -386,7 +356,7 @@ class RadioMapSolver:
         self._sampler.seed(seed, num_samples)
 
         # Allocate the pathloss map
-        radio_map = RadioMap(scene, center, orientation, size, cell_size)
+        radio_map = RadioMap(scene, meas_surf, cell_size, proj_normal)
 
         # Computes the pathloss map
         # `radio_map` is updated in-place
