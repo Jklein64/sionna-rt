@@ -166,7 +166,7 @@ class RadioMapSolver:
     .. code-block:: Python
 
         import sionna
-        from sionna.rt import load_scene, PlanarArray, Transmitter, RadioMapSolver
+        from sionna.rt import load_scene, PlanarArray, Transmitter, RadioMapSolver, measurement_plane
 
         scene = load_scene(sionna.rt.scene.munich)
         scene.radio_materials["marble"].thickness = 0.5
@@ -187,7 +187,8 @@ class RadioMapSolver:
         tx.look_at(mi.Point3f(40,80,1.5))
 
         solver = RadioMapSolver()
-        rm = solver(scene, cell_size=(1., 1.), samples_per_tx=100000000)
+        meas_surf = measurement_plane
+        rm = solver(scene, meas_surf, cell_size=(1., 1.), samples_per_tx=100000000)
         scene.preview(radio_map=rm, clip_at=15., rm_vmin=-100.)
 
     .. figure:: ../figures/radio_map_preview.png
@@ -247,23 +248,7 @@ class RadioMapSolver:
 
         :param scene: Scene for which to compute the radio map
 
-        :param center: Center of the radio map :math:`(x,y,z)` [m] as
-            three-dimensional vector. If set to `None`, the radio map is
-            centered on the center of the scene, except for the elevation
-            :math:`z` that is set to 1.5m. Otherwise, ``orientation`` and
-            ``size`` must be provided.
-
-        :param orientation: Orientation of the radio map
-            :math:`(\alpha, \beta, \gamma)` specified through three angles
-            corresponding to a 3D rotation as defined in :eq:`rotation`.
-            An orientation of :math:`(0,0,0)` or `None` corresponds to a
-            radio map that is parallel to the XY plane.
-            If not set to `None`, then ``center`` and ``size`` must be
-            provided.
-
-        :param size:  Size of the radio map [m]. If set to `None`, then the
-            size of the radio map is set such that it covers the entire scene.
-            Otherwise, ``center`` and ``orientation`` must be provided.
+        :param meas_surf: Mitsuba mesh to use as the measurement surface
 
         :param cell_size: Size of a cell of the radio map [m]
 

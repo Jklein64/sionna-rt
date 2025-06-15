@@ -167,6 +167,27 @@ def measurement_plane(
         orientation = None,
         size : mi.Point2f | None = None
 ) -> mi.Mesh:
+    r"""
+    Creates a flat mesh to use as a measurement surface.
+
+    :param center: Center of the radio map :math:`(x,y,z)` [m] as
+            three-dimensional vector. If set to `None`, the radio map is
+            centered on the center of the scene, except for the elevation
+            :math:`z` that is set to 1.5m. Otherwise, ``orientation`` and
+            ``size`` must be provided.
+
+    :param orientation: Orientation of the radio map
+        :math:`(\alpha, \beta, \gamma)` specified through three angles
+        corresponding to a 3D rotation as defined in :eq:`rotation`.
+        An orientation of :math:`(0,0,0)` or `None` corresponds to a
+        radio map that is parallel to the XY plane.
+        If not set to `None`, then ``center`` and ``size`` must be
+        provided.
+
+    :param size:  Size of the radio map [m]. If set to `None`, then the
+        size of the radio map is set such that it covers the entire scene.
+        Otherwise, ``center`` and ``orientation`` must be provided.
+    """
     # Check the properties of the rectangle defining the radio map
     if ((center is None) and (size is None) and (orientation is None)):
         # Default value for center: Center of the scene

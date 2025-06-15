@@ -27,13 +27,10 @@ class RadioMap:
     Please refer to the documentation of this module for further details.
 
     :param scene: Scene for which the radio map is computed
-    :param center: Center of the radio map :math:`(x,y,z)` [m] as
-        three-dimensional vector
-    :param orientation: Orientation of the radio map
-        :math:`(\alpha, \beta, \gamma)` specified through three angles
-        corresponding to a 3D rotation as defined in :eq:`rotation`
-    :param size:  Size of the radio map [m]
+    :param meas_surf: Mitsuba mesh to use as the measurement surface
     :param cell_size: Size of a cell of the radio map [m]
+    :param area_samples: Total number of samples to use for cell area estimates
+    :param area_samples_per_round: Number of simultaneously evaluated samples
     """
 
     def __init__(self,
@@ -210,12 +207,10 @@ class RadioMap:
 
     @property
     def projection_frame(self):
-        r"""Orientation of the radio map :math:`(\alpha, \beta, \gamma)`
-        specified through three angles corresponding to a 3D rotation as defined
-        in :eq:`rotation`. An orientation of :math:`(0,0,0)` corresponds to a
-        radio map that is parallel to the XY plane.
+        r"""Coordinate frame whose :math:`z` component is the normal vector of 
+        the projection plane.
 
-        :type: :py:class:`mi.Point3f`
+        :type: :py:class:`mi.Frame3f`
         """
         return self._proj_frame
 
