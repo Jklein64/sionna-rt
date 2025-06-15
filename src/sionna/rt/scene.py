@@ -1467,3 +1467,9 @@ Example scene containing three metallic rectangles
 .. figure:: ../figures/triple_reflector.png
    :align: center
 """
+
+gassendi_crater = str(files(scenes).joinpath("gassendi_crater/gassendi_crater.xml"))
+r"""
+Example scene containing the Gassendi Crater, a crater on the moon
+This scene was created with data downloaded from `NASA <https://nasa3d.arc.nasa.gov/detail/gassendi-crater>`_.
+"""

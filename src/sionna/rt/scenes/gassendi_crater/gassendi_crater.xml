@@ -1,0 +1,13 @@
+<scene version="2.1.0">
+    <bsdf type="itu-radio-material" id="reflector-mat">
+        <!-- TODO replace with the values from Anshul -->
+        <string name="type" value="metal" />
+        <float name="thickness" value="0.01" />
+    </bsdf>
+
+    <shape type="ply" id="mesh-reflector">
+        <string name="filename" value="meshes/gassendi_crater.ply" />
+        <boolean name="face_normals" value="true" />
+        <ref id="reflector-mat" name="bsdf" />
+    </shape>
+</scene>
