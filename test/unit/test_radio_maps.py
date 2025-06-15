@@ -9,7 +9,7 @@ import drjit as dr
 
 import sionna.rt as rt
 from sionna.rt import load_scene, Transmitter, PlanarArray, ITURadioMaterial,\
-    Receiver, PathSolver, RadioMapSolver, BackscatteringPattern
+    Receiver, PathSolver, RadioMapSolver, BackscatteringPattern, Scene, HolderMaterial
 from sionna.rt.utils import dbm_to_watt
 
 
@@ -178,7 +178,7 @@ def test_random_positions():
                    diffuse_reflection=True,
                    refraction=True,
                    samples_per_tx=int(1e7))
-    
+
     samples_pos, samples_cell_ind = rm.sample_positions(batch_size,
                                                         min_val_db=-110,
                                                         center_pos=True)
@@ -564,3 +564,119 @@ def test_box_02():
     a = paths_to_coverage_map(paths)[0]
     nmse_db = 10*np.log10(np.mean( ((rm.path_gain[0]-a)/a)**2 ))
     assert nmse_db < -20.
+
+# The triangle method fails something similar to this as well, but not as bad
+def test_non_planar():
+    N = 100
+    # Create terrain with soft rolling hills
+    vert_x, vert_y = np.meshgrid(
+        np.linspace(0, 10, N),
+        np.linspace(0, 10, N),
+        indexing="xy")
+    vert_z = (np.sin(2 * vert_x) + np.sin(2 * vert_y)) / 2
+    vert_xyz = np.stack([vert_x, vert_y, vert_z], axis=2).reshape(-1, 3)
+
+    # Triangulate
+    vertex_indices = np.arange(N * N)
+    is_last_column = (vertex_indices + 1) % N == 0
+    is_last_row = vertex_indices // N == N - 1
+    ii = vertex_indices[~is_last_row & ~is_last_column]
+    faces = np.stack([[ii, ii + 1, ii + N + 1], [ii, ii + N + 1, ii + N]])
+    faces = np.concatenate(faces.T, axis=-1).T
+
+    # Create scene
+    props = mi.Properties()
+    mat_lunar_highland = rt.RadioMaterial(
+        name="lunar-highland",
+        thickness=11,
+        relative_permittivity=2.7,
+        conductivity=10**(-12.5),
+        scattering_coefficient=0.4,
+        xpd_coefficient=0.1,
+        scattering_pattern='lambertian',
+        frequency_update_callback=None,
+        color=None,
+        props=None)
+    props["material"] = mat_lunar_highland
+    # props["material"] = rt.ITURadioMaterial("mat", itu_type="concrete", thickness=10)
+    # props["material"] = RadioMaterial("mat", thickness=10, relative_permittivity=100)
+    # Sionna requires bsdfs to be wrapped in HolderMaterial
+    props["material"] = HolderMaterial(props)
+    mi_mesh = mi.Mesh(name="terrain",
+                      vertex_count=vert_xyz.shape[0],
+                      face_count=faces.shape[0],
+                      props=props)
+    mi_mesh_params = mi.traverse(mi_mesh)
+    mi_mesh_params["vertex_positions"] = mi.Float(vert_xyz.ravel().astype(np.float32))
+    mi_mesh_params["faces"] = mi.UInt(faces.ravel().astype(np.uint32))
+    mi_mesh_params.update()
+    mi_scene = mi.load_dict({
+        "type": "scene",
+        "terrain": mi_mesh
+    })
+
+    meas_surf = mi.Mesh(name="terrain",
+                    vertex_count=vert_xyz.shape[0],
+                    face_count=faces.shape[0],
+                    props=props)
+    meas_surf_params = mi.traverse(meas_surf)
+    # measurement surface is offset 1cm vertically from terrain
+    vert_xyz_ms = vert_xyz + np.array([0, 0, 0.01])
+    meas_surf_params["vertex_positions"] = mi.Float(vert_xyz_ms.ravel().astype(np.float32))
+    meas_surf_params["faces"] = mi.UInt(faces.ravel().astype(np.uint32))
+    meas_surf_params.update();
+
+    scene = Scene(mi_scene)
+    scene.tx_array = PlanarArray(num_rows=1,
+                             num_cols=1,
+                             vertical_spacing=0.5,
+                             horizontal_spacing=0.5,
+                             pattern="iso",
+                             polarization="V")
+    tx = Transmitter(name="tx",
+                    position=mi.Point3f(0, 0, 1),
+                    orientation=mi.Point3f(0,0,0),
+                    power_dbm=100)
+    scene.add(tx)
+
+    max_depth = 1 # Test only works for max_depth=1
+    rm_solver = rt.RadioMapSolver()
+    rm = rm_solver(scene=scene,
+                meas_surf=meas_surf,
+                cell_size=[0.3, 0.3],
+                samples_per_tx=int(1e7),
+                diffuse_reflection=False,
+                max_depth=5)
+    
+    cell_centers = rm.cell_centers.numpy()
+    cell_centers = np.reshape(cell_centers, [-1,3])
+    for i, pos in enumerate(cell_centers):
+        scene.add(rt.Receiver(name=f"rx-{i}",
+                            position=mi.Point3f(pos),
+                            orientation=mi.Point3f(0., 0., 0.)))
+    scene.rx_array =  PlanarArray(num_rows=1,
+                                num_cols=1,
+                                vertical_spacing=0.5,
+                                horizontal_spacing=0.5,
+                                pattern="iso",
+                                polarization="VH")
+
+    path_solver = PathSolver()
+    paths = path_solver(
+        scene=scene,
+        max_depth=max_depth,
+        max_num_paths_per_src=int(4e6),
+        samples_per_src=int(4e6),
+        synthetic_array=True,
+        los=True,
+        specular_reflection=True,
+        diffuse_reflection=True,
+        refraction=True)
+    rm_theo = paths_to_coverage_map(paths)
+    rm_rt = rm.path_gain.numpy()
+    # compute masked mean squared error in dB
+    mask = np.isfinite(rm_rt) & np.isfinite(rm_theo)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        err = np.abs(rm_rt - rm_theo) / rm_theo
+    nmse_db = 10*np.log10(np.mean(err[mask]**2))
+    assert nmse_db < -20
